@@ -1,832 +1,507 @@
 # sport_federation_of_rwanda
 
--- ============================================================
--- RWANDA NATIONAL SPORTS FEDERATION
--- Comprehensive Database Schema with NIDA DOB Verification
--- ============================================================
-
--- ============================================================
--- SECTION 1: GEOGRAPHIC & ADMINISTRATIVE STRUCTURE
--- ============================================================
-
-CREATE TABLE provinces (
-    province_id     SERIAL PRIMARY KEY,
-    province_name   VARCHAR(100) NOT NULL UNIQUE,
-    province_code   CHAR(3) NOT NULL UNIQUE,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE districts (
-    district_id     SERIAL PRIMARY KEY,
-    province_id     INT NOT NULL REFERENCES provinces(province_id),
-    district_name   VARCHAR(100) NOT NULL,
-    district_code   CHAR(5) NOT NULL UNIQUE,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE sectors (
-    sector_id       SERIAL PRIMARY KEY,
-    district_id     INT NOT NULL REFERENCES districts(district_id),
-    sector_name     VARCHAR(100) NOT NULL,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- ============================================================
--- SECTION 2: SPORTS DISCIPLINES
--- ============================================================
-
-CREATE TABLE sport_categories (
-    category_id     SERIAL PRIMARY KEY,
-    category_name   VARCHAR(100) NOT NULL UNIQUE,  -- e.g. Team Sports, Individual, Combat
-    description     TEXT,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE sports (
-    sport_id        SERIAL PRIMARY KEY,
-    category_id     INT NOT NULL REFERENCES sport_categories(category_id),
-    sport_name      VARCHAR(100) NOT NULL UNIQUE,  -- Football, Basketball, Athletics, etc.
-    sport_code      CHAR(5) NOT NULL UNIQUE,
-    governing_body  VARCHAR(200),                  -- FIFA, FIBA, World Athletics, etc.
-    is_olympic      BOOLEAN DEFAULT FALSE,
-    is_active       BOOLEAN DEFAULT TRUE,
-    description     TEXT,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE age_categories (
-    age_cat_id      SERIAL PRIMARY KEY,
-    sport_id        INT NOT NULL REFERENCES sports(sport_id),
-    category_name   VARCHAR(50) NOT NULL,          -- U13, U15, U17, U20, Senior, Masters
-    min_age         INT NOT NULL,
-    max_age         INT,                           -- NULL = no upper limit (Senior/Masters)
-    gender          CHAR(1) CHECK (gender IN ('M','F','X')),
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(sport_id, category_name, gender)
-);
-
--- ============================================================
--- SECTION 3: FEDERATION HIERARCHY
--- ============================================================
-
-CREATE TABLE federations (
-    federation_id   SERIAL PRIMARY KEY,
-    sport_id        INT NOT NULL REFERENCES sports(sport_id),
-    federation_name VARCHAR(200) NOT NULL,
-    acronym         VARCHAR(20),
-    federation_type VARCHAR(20) CHECK (federation_type IN ('NATIONAL','PROVINCIAL','DISTRICT')),
-    province_id     INT REFERENCES provinces(province_id),
-    district_id     INT REFERENCES districts(district_id),
-    parent_fed_id   INT REFERENCES federations(federation_id),
-    registration_no VARCHAR(100) UNIQUE,
-    founding_date   DATE,
-    affiliation_date DATE,
-    is_active       BOOLEAN DEFAULT TRUE,
-    website         VARCHAR(255),
-    email           VARCHAR(255),
-    phone           VARCHAR(30),
-    address         TEXT,
-    logo_url        VARCHAR(500),
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- ============================================================
--- SECTION 4: CLUBS & TEAMS
--- ============================================================
-
-CREATE TABLE clubs (
-    club_id         SERIAL PRIMARY KEY,
-    federation_id   INT NOT NULL REFERENCES federations(federation_id),
-    sport_id        INT NOT NULL REFERENCES sports(sport_id),
-    district_id     INT REFERENCES districts(district_id),
-    sector_id       INT REFERENCES sectors(sector_id),
-    club_name       VARCHAR(200) NOT NULL,
-    club_code       VARCHAR(20) UNIQUE,
-    founding_date   DATE,
-    registration_no VARCHAR(100) UNIQUE,
-    affiliation_status VARCHAR(20) DEFAULT 'ACTIVE'
-                    CHECK (affiliation_status IN ('ACTIVE','SUSPENDED','REVOKED','PENDING')),
-    home_venue      VARCHAR(255),
-    website         VARCHAR(255),
-    email           VARCHAR(255),
-    phone           VARCHAR(30),
-    address         TEXT,
-    logo_url        VARCHAR(500),
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE teams (
-    team_id         SERIAL PRIMARY KEY,
-    club_id         INT NOT NULL REFERENCES clubs(club_id),
-    age_cat_id      INT NOT NULL REFERENCES age_categories(age_cat_id),
-    team_name       VARCHAR(200) NOT NULL,
-    season_year     INT NOT NULL,
-    is_active       BOOLEAN DEFAULT TRUE,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(club_id, age_cat_id, season_year)
-);
-
--- ============================================================
--- SECTION 5: NIDA INTEGRATION & IDENTITY VERIFICATION
--- ============================================================
-
--- Mirror of NIDA data pulled via API (read-only, refreshed periodically)
-CREATE TABLE nida_records (
-    nida_record_id  SERIAL PRIMARY KEY,
-    national_id     CHAR(16) NOT NULL UNIQUE,      -- Rwanda NID: 16 digits
-    first_name      VARCHAR(100) NOT NULL,
-    last_name       VARCHAR(100) NOT NULL,
-    date_of_birth   DATE NOT NULL,
-    gender          CHAR(1) CHECK (gender IN ('M','F')),
-    birth_place     VARCHAR(200),
-    nationality     VARCHAR(100) DEFAULT 'RWANDAN',
-    id_issue_date   DATE,
-    id_expiry_date  DATE,
-    is_valid        BOOLEAN DEFAULT TRUE,
-    last_verified   TIMESTAMP,                     -- Last time we queried NIDA
-    raw_response    JSONB,                         -- Store full NIDA API response
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Audit log for every NIDA verification request
-CREATE TABLE nida_verification_log (
-    log_id          SERIAL PRIMARY KEY,
-    national_id     CHAR(16) NOT NULL,
-    verification_type VARCHAR(30) NOT NULL         -- REGISTRATION, COMPETITION, PERIODIC_AUDIT
-                    CHECK (verification_type IN ('REGISTRATION','COMPETITION_ELIGIBILITY',
-                           'PERIODIC_AUDIT','MANUAL_CHECK','TRANSFER')),
-    requested_by    INT,                           -- FK to staff/users table
-    request_time    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    response_status VARCHAR(20)                    -- SUCCESS, FAILED, MISMATCH, NOT_FOUND
-                    CHECK (response_status IN ('SUCCESS','FAILED','MISMATCH','NOT_FOUND','TIMEOUT')),
-    dob_submitted   DATE,                          -- DOB submitted by federation/club
-    dob_from_nida   DATE,                          -- DOB returned by NIDA
-    dob_match       BOOLEAN,                       -- TRUE if they match
-    mismatch_days   INT,                           -- How many days difference if mismatch
-    notes           TEXT,
-    ip_address      INET
-);
-
--- ============================================================
--- SECTION 6: PERSONS (Players, Coaches, Officials, Staff)
--- ============================================================
-
-CREATE TABLE persons (
-    person_id       SERIAL PRIMARY KEY,
-    national_id     CHAR(16) UNIQUE,               -- Rwanda NID
-    nida_record_id  INT REFERENCES nida_records(nida_record_id),
-
-    -- Personal details (sourced from NIDA where possible)
-    first_name      VARCHAR(100) NOT NULL,
-    last_name       VARCHAR(100) NOT NULL,
-    date_of_birth   DATE NOT NULL,
-    gender          CHAR(1) CHECK (gender IN ('M','F','X')),
-    nationality     VARCHAR(100) DEFAULT 'RWANDAN',
-    birth_place     VARCHAR(200),
-
-    -- Contact
-    phone           VARCHAR(30),
-    email           VARCHAR(255),
-    address         TEXT,
-    province_id     INT REFERENCES provinces(province_id),
-    district_id     INT REFERENCES districts(district_id),
-
-    -- Media
-    photo_url       VARCHAR(500),
-    passport_no     VARCHAR(50),
-    passport_expiry DATE,
-
-    -- NIDA Verification Status
-    nida_verified           BOOLEAN DEFAULT FALSE,
-    nida_verification_date  TIMESTAMP,
-    nida_dob_match          BOOLEAN,               -- Critical: does DOB match NIDA?
-    nida_mismatch_days      INT,                   -- Days difference if mismatch
-    nida_status             VARCHAR(20) DEFAULT 'PENDING'
-                            CHECK (nida_status IN ('PENDING','VERIFIED','MISMATCH',
-                                   'NOT_FOUND','FLAGGED','EXEMPT')),
-    nida_flag_reason        TEXT,                  -- Reason if flagged
-
-    -- System
-    is_active       BOOLEAN DEFAULT TRUE,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- ============================================================
--- SECTION 7: PLAYERS
--- ============================================================
-
-CREATE TABLE players (
-    player_id           SERIAL PRIMARY KEY,
-    person_id           INT NOT NULL UNIQUE REFERENCES persons(person_id),
-    registration_no     VARCHAR(50) UNIQUE,        -- Federation-issued player ID
-    primary_sport_id    INT REFERENCES sports(sport_id),
-    player_position     VARCHAR(100),              -- Goalkeeper, Forward, etc.
-    dominant_foot       CHAR(1) CHECK (dominant_foot IN ('L','R','B')),  -- Left/Right/Both
-    height_cm           DECIMAL(5,1),
-    weight_kg           DECIMAL(5,1),
-    shirt_number        INT,
-
-    -- Registration
-    registration_date   DATE NOT NULL DEFAULT CURRENT_DATE,
-    registration_status VARCHAR(20) DEFAULT 'ACTIVE'
-                        CHECK (registration_status IN ('ACTIVE','SUSPENDED',
-                               'BANNED','RETIRED','PENDING_VERIFICATION')),
-    status_reason       TEXT,
-    eligible_to_play    BOOLEAN DEFAULT FALSE,     -- Only TRUE after NIDA verification passes
-
-    -- International
-    is_international    BOOLEAN DEFAULT FALSE,
-    fifa_id             VARCHAR(50),               -- For football players
-    international_caps  INT DEFAULT 0,
-
-    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- Player registrations per club per season
-CREATE TABLE player_registrations (
-    reg_id          SERIAL PRIMARY KEY,
-    player_id       INT NOT NULL REFERENCES players(player_id),
-    club_id         INT NOT NULL REFERENCES clubs(club_id),
-    team_id         INT REFERENCES teams(team_id),
-    age_cat_id      INT REFERENCES age_categories(age_cat_id),
-    season_year     INT NOT NULL,
-    registration_date DATE NOT NULL DEFAULT CURRENT_DATE,
-    contract_start  DATE,
-    contract_end    DATE,
-    reg_status      VARCHAR(20) DEFAULT 'ACTIVE'
-                    CHECK (reg_status IN ('ACTIVE','LOANED','TRANSFERRED','EXPIRED','CANCELLED')),
-    jersey_number   INT,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(player_id, club_id, season_year)
-);
-
--- Player transfers between clubs
-CREATE TABLE player_transfers (
-    transfer_id     SERIAL PRIMARY KEY,
-    player_id       INT NOT NULL REFERENCES players(player_id),
-    from_club_id    INT REFERENCES clubs(club_id),
-    to_club_id      INT NOT NULL REFERENCES clubs(club_id),
-    transfer_date   DATE NOT NULL,
-    transfer_type   VARCHAR(20) CHECK (transfer_type IN ('PERMANENT','LOAN','FREE','RETURN_FROM_LOAN')),
-    transfer_fee    DECIMAL(15,2),
-    currency        CHAR(3) DEFAULT 'RWF',
-    approved_by     INT,                           -- FK to staff
-    approval_date   DATE,
-    status          VARCHAR(20) DEFAULT 'PENDING'
-                    CHECK (status IN ('PENDING','APPROVED','REJECTED','CANCELLED')),
-    notes           TEXT,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- ============================================================
--- SECTION 8: COACHES & OFFICIALS
--- ============================================================
-
-CREATE TABLE coach_license_types (
-    license_type_id SERIAL PRIMARY KEY,
-    sport_id        INT REFERENCES sports(sport_id),
-    license_code    VARCHAR(20) NOT NULL,          -- CAF C, CAF B, CAF A, PRO, etc.
-    license_name    VARCHAR(100) NOT NULL,
-    issuing_body    VARCHAR(200),
-    min_age         INT DEFAULT 18,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE coaches (
-    coach_id        SERIAL PRIMARY KEY,
-    person_id       INT NOT NULL UNIQUE REFERENCES persons(person_id),
-    license_type_id INT REFERENCES coach_license_types(license_type_id),
-    license_no      VARCHAR(100),
-    license_issue_date DATE,
-    license_expiry_date DATE,
-    specialization  VARCHAR(200),
-    coaching_status VARCHAR(20) DEFAULT 'ACTIVE'
-                    CHECK (coaching_status IN ('ACTIVE','SUSPENDED','BANNED','RETIRED')),
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE club_coaches (
-    club_coach_id   SERIAL PRIMARY KEY,
-    coach_id        INT NOT NULL REFERENCES coaches(coach_id),
-    club_id         INT NOT NULL REFERENCES clubs(club_id),
-    role            VARCHAR(100),                  -- Head Coach, Assistant, Goalkeeper Coach
-    team_id         INT REFERENCES teams(team_id),
-    start_date      DATE NOT NULL,
-    end_date        DATE,
-    is_current      BOOLEAN DEFAULT TRUE,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE referees (
-    referee_id      SERIAL PRIMARY KEY,
-    person_id       INT NOT NULL UNIQUE REFERENCES persons(person_id),
-    sport_id        INT REFERENCES sports(sport_id),
-    referee_grade   VARCHAR(50),                   -- International, National, Regional, Local
-    license_no      VARCHAR(100),
-    license_expiry  DATE,
-    status          VARCHAR(20) DEFAULT 'ACTIVE'
-                    CHECK (status IN ('ACTIVE','SUSPENDED','RETIRED','BANNED')),
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- ============================================================
--- SECTION 9: COMPETITIONS & TOURNAMENTS
--- ============================================================
-
-CREATE TABLE competition_types (
-    comp_type_id    SERIAL PRIMARY KEY,
-    type_name       VARCHAR(100) NOT NULL,         -- League, Cup, Friendly, Championship
-    format          VARCHAR(100)                   -- Round Robin, Knockout, Mixed
-);
-
-CREATE TABLE competitions (
-    competition_id  SERIAL PRIMARY KEY,
-    federation_id   INT NOT NULL REFERENCES federations(federation_id),
-    sport_id        INT NOT NULL REFERENCES sports(sport_id),
-    age_cat_id      INT REFERENCES age_categories(age_cat_id),
-    comp_type_id    INT REFERENCES competition_types(comp_type_id),
-    competition_name VARCHAR(200) NOT NULL,
-    season_year     INT NOT NULL,
-    start_date      DATE,
-    end_date        DATE,
-    competition_level VARCHAR(30)
-                    CHECK (competition_level IN ('NATIONAL','PROVINCIAL','DISTRICT','INTERNATIONAL')),
-    status          VARCHAR(20) DEFAULT 'PLANNED'
-                    CHECK (status IN ('PLANNED','ONGOING','COMPLETED','CANCELLED','SUSPENDED')),
-    max_teams       INT,
-    prize_pool      DECIMAL(15,2),
-    currency        CHAR(3) DEFAULT 'RWF',
-    host_venue      VARCHAR(255),
-    description     TEXT,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE competition_participants (
-    part_id         SERIAL PRIMARY KEY,
-    competition_id  INT NOT NULL REFERENCES competitions(competition_id),
-    club_id         INT NOT NULL REFERENCES clubs(club_id),
-    team_id         INT REFERENCES teams(team_id),
-    registration_date DATE DEFAULT CURRENT_DATE,
-    entry_fee_paid  BOOLEAN DEFAULT FALSE,
-    status          VARCHAR(20) DEFAULT 'REGISTERED'
-                    CHECK (status IN ('REGISTERED','CONFIRMED','WITHDRAWN','DISQUALIFIED')),
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(competition_id, club_id)
-);
-
-CREATE TABLE venues (
-    venue_id        SERIAL PRIMARY KEY,
-    venue_name      VARCHAR(200) NOT NULL,
-    district_id     INT REFERENCES districts(district_id),
-    address         TEXT,
-    capacity        INT,
-    surface_type    VARCHAR(50),                   -- Natural Grass, Artificial Turf, Indoor, etc.
-    has_lights      BOOLEAN DEFAULT FALSE,
-    latitude        DECIMAL(10,7),
-    longitude       DECIMAL(10,7),
-    is_active       BOOLEAN DEFAULT TRUE,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE matches (
-    match_id        SERIAL PRIMARY KEY,
-    competition_id  INT NOT NULL REFERENCES competitions(competition_id),
-    venue_id        INT REFERENCES venues(venue_id),
-    home_club_id    INT REFERENCES clubs(club_id),
-    away_club_id    INT REFERENCES clubs(club_id),
-    match_date      TIMESTAMP,
-    round_name      VARCHAR(100),                  -- Group Stage, Quarter Final, Final
-    match_number    INT,
-    home_score      INT,
-    away_score      INT,
-    status          VARCHAR(20) DEFAULT 'SCHEDULED'
-                    CHECK (status IN ('SCHEDULED','ONGOING','COMPLETED',
-                           'POSTPONED','CANCELLED','ABANDONED','FORFEITED')),
-    referee_id      INT REFERENCES referees(referee_id),
-    attendance      INT,
-    match_report    TEXT,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- ============================================================
--- SECTION 10: PLAYER STATISTICS
--- ============================================================
-
-CREATE TABLE player_match_stats (
-    stat_id         SERIAL PRIMARY KEY,
-    match_id        INT NOT NULL REFERENCES matches(match_id),
-    player_id       INT NOT NULL REFERENCES players(player_id),
-    club_id         INT NOT NULL REFERENCES clubs(club_id),
-    played          BOOLEAN DEFAULT FALSE,
-    minutes_played  INT DEFAULT 0,
-    goals           INT DEFAULT 0,
-    assists         INT DEFAULT 0,
-    yellow_cards    INT DEFAULT 0,
-    red_cards       INT DEFAULT 0,
-    -- Sport-specific fields stored as JSONB for flexibility
-    extra_stats     JSONB,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(match_id, player_id)
-);
-
-CREATE TABLE player_season_stats (
-    season_stat_id  SERIAL PRIMARY KEY,
-    player_id       INT NOT NULL REFERENCES players(player_id),
-    club_id         INT NOT NULL REFERENCES clubs(club_id),
-    competition_id  INT REFERENCES competitions(competition_id),
-    season_year     INT NOT NULL,
-    matches_played  INT DEFAULT 0,
-    total_minutes   INT DEFAULT 0,
-    goals           INT DEFAULT 0,
-    assists         INT DEFAULT 0,
-    yellow_cards    INT DEFAULT 0,
-    red_cards       INT DEFAULT 0,
-    extra_stats     JSONB,
-    last_updated    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE(player_id, club_id, season_year, competition_id)
-);
-
--- ============================================================
--- SECTION 11: DISCIPLINARY MANAGEMENT
--- ============================================================
-
-CREATE TABLE disciplinary_cases (
-    case_id         SERIAL PRIMARY KEY,
-    person_id       INT NOT NULL REFERENCES persons(person_id),
-    club_id         INT REFERENCES clubs(club_id),
-    match_id        INT REFERENCES matches(match_id),
-    competition_id  INT REFERENCES competitions(competition_id),
-    case_type       VARCHAR(50) CHECK (case_type IN (
-                        'YELLOW_CARD','RED_CARD','SUSPENSION','BAN',
-                        'FINE','AGE_FRAUD','DOPING','MISCONDUCT','APPEAL')),
-    incident_date   DATE NOT NULL,
-    description     TEXT NOT NULL,
-    decision        TEXT,
-    suspension_games INT DEFAULT 0,
-    suspension_days  INT DEFAULT 0,
-    fine_amount     DECIMAL(15,2),
-    status          VARCHAR(20) DEFAULT 'OPEN'
-                    CHECK (status IN ('OPEN','UNDER_REVIEW','DECIDED','APPEALED','CLOSED')),
-    decided_by      INT,
-    decision_date   DATE,
-    appeal_deadline DATE,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- ============================================================
--- SECTION 12: AGE FRAUD FLAGS (Core Anti-Fraud Module)
--- ============================================================
-
-CREATE TABLE age_fraud_investigations (
-    investigation_id    SERIAL PRIMARY KEY,
-    person_id           INT NOT NULL REFERENCES persons(person_id),
-    reported_by         INT,                       -- FK to staff/user
-    report_date         DATE DEFAULT CURRENT_DATE,
-    dob_on_file         DATE NOT NULL,
-    dob_from_nida       DATE,
-    dob_difference_days INT,                       -- Computed: |dob_on_file - dob_from_nida|
-    
-    -- Evidence
-    evidence_type       VARCHAR(50),               -- NIDA_MISMATCH, PHYSICAL_ASSESSMENT, TIPOFF
-    evidence_notes      TEXT,
-    
-    -- Investigation
-    investigation_status VARCHAR(20) DEFAULT 'OPEN'
-                        CHECK (investigation_status IN (
-                            'OPEN','UNDER_INVESTIGATION','CONFIRMED_FRAUD',
-                            'CLEARED','CLOSED','REFERRED_TO_AUTHORITY')),
-    outcome             TEXT,
-    action_taken        VARCHAR(100),              -- BANNED, SUSPENDED, CLEARED, etc.
-    
-    -- Linkage
-    disciplinary_case_id INT REFERENCES disciplinary_cases(case_id),
-    
-    created_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    updated_at          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- ============================================================
--- SECTION 13: SYSTEM USERS & ACCESS CONTROL
--- ============================================================
-
-CREATE TABLE roles (
-    role_id         SERIAL PRIMARY KEY,
-    role_name       VARCHAR(100) NOT NULL UNIQUE,
-    description     TEXT,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE system_users (
-    user_id         SERIAL PRIMARY KEY,
-    person_id       INT REFERENCES persons(person_id),
-    username        VARCHAR(100) NOT NULL UNIQUE,
-    email           VARCHAR(255) NOT NULL UNIQUE,
-    password_hash   VARCHAR(255) NOT NULL,
-    role_id         INT NOT NULL REFERENCES roles(role_id),
-    federation_id   INT REFERENCES federations(federation_id),
-    club_id         INT REFERENCES clubs(club_id),
-    is_active       BOOLEAN DEFAULT TRUE,
-    last_login      TIMESTAMP,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE audit_log (
-    audit_id        SERIAL PRIMARY KEY,
-    user_id         INT REFERENCES system_users(user_id),
-    action          VARCHAR(100) NOT NULL,
-    table_name      VARCHAR(100),
-    record_id       INT,
-    old_values      JSONB,
-    new_values      JSONB,
-    ip_address      INET,
-    created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-
--- ============================================================
--- SECTION 14: INDEXES FOR PERFORMANCE
--- ============================================================
-
-CREATE INDEX idx_persons_national_id     ON persons(national_id);
-CREATE INDEX idx_persons_nida_status     ON persons(nida_status);
-CREATE INDEX idx_persons_dob             ON persons(date_of_birth);
-CREATE INDEX idx_players_status          ON players(registration_status);
-CREATE INDEX idx_players_eligible        ON players(eligible_to_play);
-CREATE INDEX idx_player_reg_season       ON player_registrations(season_year, club_id);
-CREATE INDEX idx_matches_date            ON matches(match_date);
-CREATE INDEX idx_matches_competition     ON matches(competition_id);
-CREATE INDEX idx_nida_log_nid            ON nida_verification_log(national_id);
-CREATE INDEX idx_nida_log_mismatch       ON nida_verification_log(dob_match) WHERE dob_match = FALSE;
-CREATE INDEX idx_fraud_status            ON age_fraud_investigations(investigation_status);
-CREATE INDEX idx_disciplinary_person     ON disciplinary_cases(person_id);
-CREATE INDEX idx_audit_table_record      ON audit_log(table_name, record_id);
-
--- ============================================================
--- SECTION 15: USEFUL VIEWS
--- ============================================================
-
--- View: All flagged players with DOB mismatch
-CREATE VIEW v_dob_mismatch_players AS
-SELECT
-    p.person_id,
-    p.national_id,
-    p.first_name || ' ' || p.last_name      AS full_name,
-    p.date_of_birth                          AS registered_dob,
-    nr.date_of_birth                         AS nida_dob,
-    p.nida_mismatch_days                     AS days_difference,
-    p.nida_status,
-    pl.registration_status,
-    pl.eligible_to_play
-FROM persons p
-JOIN players pl ON pl.person_id = p.person_id
-LEFT JOIN nida_records nr ON nr.nida_record_id = p.nida_record_id
-WHERE p.nida_status IN ('MISMATCH','FLAGGED')
-ORDER BY ABS(p.nida_mismatch_days) DESC;
-
--- View: Player registration with club and current eligibility
-CREATE VIEW v_player_club_eligibility AS
-SELECT
-    pl.player_id,
-    pl.registration_no,
-    p.national_id,
-    p.first_name || ' ' || p.last_name      AS full_name,
-    p.date_of_birth,
-    EXTRACT(YEAR FROM AGE(p.date_of_birth))  AS current_age,
-    c.club_name,
-    pr.season_year,
-    ac.category_name                         AS age_category,
-    p.nida_status,
-    pl.eligible_to_play,
-    pl.registration_status
-FROM players pl
-JOIN persons p ON p.person_id = pl.person_id
-JOIN player_registrations pr ON pr.player_id = pl.player_id
-JOIN clubs c ON c.club_id = pr.club_id
-LEFT JOIN age_categories ac ON ac.age_cat_id = pr.age_cat_id;
-
--- View: Competition eligibility check
-CREATE VIEW v_competition_eligibility AS
-SELECT
-    comp.competition_name,
-    comp.season_year,
-    ac.category_name,
-    ac.min_age,
-    ac.max_age,
-    p.first_name || ' ' || p.last_name      AS player_name,
-    p.date_of_birth,
-    EXTRACT(YEAR FROM AGE(p.date_of_birth))  AS player_age,
-    p.nida_status,
-    pl.eligible_to_play,
-    CASE
-        WHEN p.nida_status != 'VERIFIED' THEN 'BLOCKED - NIDA not verified'
-        WHEN EXTRACT(YEAR FROM AGE(p.date_of_birth)) < ac.min_age THEN 'BLOCKED - Too young'
-        WHEN ac.max_age IS NOT NULL AND
-             EXTRACT(YEAR FROM AGE(p.date_of_birth)) > ac.max_age THEN 'BLOCKED - Too old'
-        ELSE 'ELIGIBLE'
-    END AS eligibility_status
-FROM players pl
-JOIN persons p ON p.person_id = pl.person_id
-CROSS JOIN competitions comp
-JOIN age_categories ac ON ac.age_cat_id = comp.age_cat_id;
-
--- View: NIDA verification summary dashboard
-CREATE VIEW v_nida_verification_summary AS
-SELECT
-    COUNT(*)                                        AS total_persons,
-    COUNT(*) FILTER (WHERE nida_status = 'VERIFIED')    AS verified,
-    COUNT(*) FILTER (WHERE nida_status = 'PENDING')     AS pending,
-    COUNT(*) FILTER (WHERE nida_status = 'MISMATCH')    AS dob_mismatches,
-    COUNT(*) FILTER (WHERE nida_status = 'FLAGGED')     AS flagged,
-    COUNT(*) FILTER (WHERE nida_status = 'NOT_FOUND')   AS not_found
-FROM persons;
-
--- ============================================================
--- SECTION 16: SEED DATA - ROLES & SPORT CATEGORIES
--- ============================================================
-
-INSERT INTO roles (role_name, description) VALUES
-    ('SUPER_ADMIN',     'Full system access'),
-    ('FED_ADMIN',       'National federation administrator'),
-    ('PROV_ADMIN',      'Provincial federation administrator'),
-    ('CLUB_ADMIN',      'Club administrator'),
-    ('REGISTRAR',       'Player registration officer'),
-    ('NIDA_OFFICER',    'NIDA verification officer'),
-    ('REFEREE_ADMIN',   'Referee and officials manager'),
-    ('COMPETITION_MGR', 'Competition and fixtures manager'),
-    ('VIEWER',          'Read-only access');
-
-INSERT INTO sport_categories (category_name, description) VALUES
-    ('Team Sports',       'Sports played by teams'),
-    ('Individual Sports', 'Sports competed individually'),
-    ('Combat Sports',     'Martial arts and combat disciplines'),
-    ('Aquatic Sports',    'Swimming and water-based sports'),
-    ('Racket Sports',     'Tennis, badminton, table tennis'),
-    ('Athletics',         'Track and field events');
-
-INSERT INTO sports (category_id, sport_name, sport_code, governing_body, is_olympic) VALUES
-    (1, 'Football',         'FOOTB', 'FIFA',             TRUE),
-    (1, 'Basketball',       'BSKTB', 'FIBA',             TRUE),
-    (1, 'Volleyball',       'VOLLB', 'FIVB',             TRUE),
-    (1, 'Handball',         'HNDBL', 'IHF',              TRUE),
-    (1, 'Rugby',            'RUGBY', 'World Rugby',      TRUE),
-    (2, 'Cycling',          'CYCLE', 'UCI',              TRUE),
-    (2, 'Triathlon',        'TRIAT', 'World Triathlon',  TRUE),
-    (2, 'Weightlifting',    'WLIFT', 'IWF',              TRUE),
-    (3, 'Boxing',           'BOXNG', 'AIBA',             TRUE),
-    (3, 'Judo',             'JUDOO', 'IJF',              TRUE),
-    (3, 'Taekwondo',        'TAEKW', 'WT',               TRUE),
-    (3, 'Wrestling',        'WRSTL', 'UWW',              TRUE),
-    (4, 'Swimming',         'SWIMM', 'FINA',             TRUE),
-    (5, 'Tennis',           'TENNS', 'ITF',              TRUE),
-    (5, 'Badminton',        'BADMN', 'BWF',              TRUE),
-    (5, 'Table Tennis',     'TTNNS', 'ITTF',             TRUE),
-    (6, 'Athletics',        'ATHLT', 'World Athletics',  TRUE);
-
-
--- ============================================================
--- SECTION 17: KEY STORED PROCEDURES & FUNCTIONS
--- ============================================================
-
--- Function: Automatically flag DOB mismatch when NIDA data is received
-CREATE OR REPLACE FUNCTION fn_check_dob_mismatch(
-    p_person_id     INT,
-    p_nida_dob      DATE
-) RETURNS VOID AS $$
-DECLARE
-    v_registered_dob DATE;
-    v_diff_days      INT;
-BEGIN
-    SELECT date_of_birth INTO v_registered_dob
-    FROM persons WHERE person_id = p_person_id;
-
-    v_diff_days := ABS(p_nida_dob - v_registered_dob);
-
-    UPDATE persons SET
-        nida_dob_match        = (v_diff_days = 0),
-        nida_mismatch_days    = v_diff_days,
-        nida_verification_date = CURRENT_TIMESTAMP,
-        nida_status = CASE
-            WHEN v_diff_days = 0   THEN 'VERIFIED'
-            WHEN v_diff_days <= 30 THEN 'MISMATCH'   -- Small discrepancy
-            ELSE                        'FLAGGED'    -- Large discrepancy = likely fraud
-        END,
-        updated_at = CURRENT_TIMESTAMP
-    WHERE person_id = p_person_id;
-
-    -- Auto-create fraud investigation if large mismatch (>90 days)
-    IF v_diff_days > 90 THEN
-        INSERT INTO age_fraud_investigations (
-            person_id, dob_on_file, dob_from_nida,
-            dob_difference_days, evidence_type,
-            evidence_notes, investigation_status
-        ) VALUES (
-            p_person_id, v_registered_dob, p_nida_dob,
-            v_diff_days, 'NIDA_MISMATCH',
-            'Auto-flagged: DOB difference of ' || v_diff_days || ' days detected via NIDA verification.',
-            'OPEN'
-        );
-    END IF;
-
-    -- Block eligibility if mismatch exists
-    IF v_diff_days > 0 THEN
-        UPDATE players SET
-            eligible_to_play    = FALSE,
-            registration_status = 'PENDING_VERIFICATION'
-        WHERE person_id = p_person_id;
-    ELSE
-        UPDATE players SET
-            eligible_to_play = TRUE
-        WHERE person_id = p_person_id
-          AND registration_status != 'SUSPENDED'
-          AND registration_status != 'BANNED';
-    END IF;
-END;
-$$ LANGUAGE plpgsql;
-
-
--- Function: Check if a player is eligible for a specific age category
-CREATE OR REPLACE FUNCTION fn_is_player_eligible(
-    p_player_id    INT,
-    p_age_cat_id   INT,
-    p_check_date   DATE DEFAULT CURRENT_DATE
-) RETURNS TABLE (
-    is_eligible     BOOLEAN,
-    reason          TEXT
-) AS $$
-DECLARE
-    v_dob       DATE;
-    v_age       INT;
-    v_min_age   INT;
-    v_max_age   INT;
-    v_nida_status VARCHAR(20);
-    v_eligible  BOOLEAN;
-    v_pl_status VARCHAR(20);
-BEGIN
-    SELECT p.date_of_birth, p.nida_status, pl.registration_status
-    INTO v_dob, v_nida_status, v_pl_status
-    FROM persons p
-    JOIN players pl ON pl.person_id = p.person_id
-    WHERE pl.player_id = p_player_id;
-
-    SELECT min_age, max_age INTO v_min_age, v_max_age
-    FROM age_categories WHERE age_cat_id = p_age_cat_id;
-
-    v_age := EXTRACT(YEAR FROM AGE(p_check_date, v_dob));
-
-    IF v_nida_status NOT IN ('VERIFIED') THEN
-        RETURN QUERY SELECT FALSE, 'NIDA verification not completed or failed';
-        RETURN;
-    END IF;
-    IF v_pl_status IN ('SUSPENDED','BANNED') THEN
-        RETURN QUERY SELECT FALSE, 'Player is ' || v_pl_status;
-        RETURN;
-    END IF;
-    IF v_age < v_min_age THEN
-        RETURN QUERY SELECT FALSE, 'Player age (' || v_age || ') below minimum (' || v_min_age || ')';
-        RETURN;
-    END IF;
-    IF v_max_age IS NOT NULL AND v_age > v_max_age THEN
-        RETURN QUERY SELECT FALSE, 'Player age (' || v_age || ') exceeds maximum (' || v_max_age || ')';
-        RETURN;
-    END IF;
-
-    RETURN QUERY SELECT TRUE, 'Player is eligible';
-END;
-$$ LANGUAGE plpgsql;
-
-
--- Trigger: Auto-update updated_at timestamp
-CREATE OR REPLACE FUNCTION fn_update_timestamp()
-RETURNS TRIGGER AS $$
-BEGIN
-    NEW.updated_at = CURRENT_TIMESTAMP;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
-CREATE TRIGGER trg_persons_updated
-    BEFORE UPDATE ON persons
-    FOR EACH ROW EXECUTE FUNCTION fn_update_timestamp();
-
-CREATE TRIGGER trg_players_updated
-    BEFORE UPDATE ON players
-    FOR EACH ROW EXECUTE FUNCTION fn_update_timestamp();
-
-CREATE TRIGGER trg_clubs_updated
-    BEFORE UPDATE ON clubs
-    FOR EACH ROW EXECUTE FUNCTION fn_update_timestamp();
-
-CREATE TRIGGER trg_matches_updated
-    BEFORE UPDATE ON matches
-    FOR EACH ROW EXECUTE FUNCTION fn_update_timestamp();
-
--- ============================================================
--- END OF SCHEMA
--- ============================================================
+# 🏆 Rwanda National Sports Federation — Database System
+
+> A comprehensive multi-sport federation management database with NIDA identity & date-of-birth verification to eliminate age fraud in competitive sports.
+
+---
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Key Features](#key-features)
+- [Database Architecture](#database-architecture)
+- [Schema Sections](#schema-sections)
+  - [1. Geographic Structure](#1-geographic-structure)
+  - [2. Sports & Disciplines](#2-sports--disciplines)
+  - [3. Federation Hierarchy](#3-federation-hierarchy)
+  - [4. Clubs & Teams](#4-clubs--teams)
+  - [5. NIDA Integration](#5-nida-integration)
+  - [6. Persons Registry](#6-persons-registry)
+  - [7. Players](#7-players)
+  - [8. Coaches & Officials](#8-coaches--officials)
+  - [9. Competitions & Matches](#9-competitions--matches)
+  - [10. Player Statistics](#10-player-statistics)
+  - [11. Disciplinary Management](#11-disciplinary-management)
+  - [12. Age Fraud Investigations](#12-age-fraud-investigations)
+  - [13. System Users & Access Control](#13-system-users--access-control)
+- [NIDA Anti-Fraud Logic](#nida-anti-fraud-logic)
+- [Stored Functions & Triggers](#stored-functions--triggers)
+- [Useful Views](#useful-views)
+- [Sports Covered](#sports-covered)
+- [Entity Relationship Summary](#entity-relationship-summary)
+- [Setup & Installation](#setup--installation)
+- [Next Steps](#next-steps)
+
+---
+
+## Overview
+
+This database is designed for the **Rwanda National Sports Federation** to manage all aspects of sports administration across the country — from player registration and club management to competition scheduling and disciplinary enforcement.
+
+The system's most critical feature is its **integration with Rwanda's NIDA (National Identification Agency)** database, which allows the federation to automatically verify each player's date of birth against official government records. This directly combats a widespread problem in youth football and other sports: **players falsifying their ages** to compete in under-age categories they are no longer eligible for.
+
+### The Problem It Solves
+
+| Problem | Solution |
+|---|---|
+| Players lying about date of birth | Auto-compare registered DOB against NIDA records |
+| Underage category fraud | Block eligibility until NIDA verification passes |
+| Duplicate player registrations | NID uniqueness constraint across all clubs |
+| No centralised sports data | Single database for all 17+ sports |
+| Manual fraud investigations | Auto-create investigation cases on large DOB mismatch |
+
+---
+
+## Key Features
+
+- **Multi-sport support** — covers all Olympic and national sports disciplines
+- **NIDA DOB verification** — every player verified against Rwanda's national ID database
+- **Automatic fraud flagging** — mismatches > 90 days auto-create an investigation case
+- **Eligibility enforcement** — players are blocked from competition until NIDA-verified
+- **Full transfer tracking** — permanent transfers, loans, and returns between clubs
+- **Competition management** — leagues, cups, knockout tournaments, fixtures, results
+- **Disciplinary system** — cards, suspensions, bans, and appeal tracking
+- **Role-based access control** — Super Admin down to Club-level users
+- **Complete audit trail** — every data change logged with user, timestamp, and old/new values
+- **Rwanda administrative hierarchy** — Province → District → Sector alignment
+
+---
+
+## Database Architecture
+
+```
+GEOGRAPHIC LAYER
+└── provinces → districts → sectors
+
+SPORTS LAYER
+└── sport_categories → sports → age_categories
+
+FEDERATION LAYER
+└── federations (National → Provincial → District)
+
+CLUB LAYER
+└── clubs → teams
+
+PERSON LAYER (NIDA-Verified)
+└── nida_records ──► persons ──► players
+                              ├── coaches
+                              └── referees
+
+COMPETITION LAYER
+└── competitions → matches → player_match_stats
+
+INTEGRITY LAYER
+└── nida_verification_log
+└── age_fraud_investigations
+└── disciplinary_cases
+└── audit_log
+```
+
+---
+
+## Schema Sections
+
+### 1. Geographic Structure
+
+Aligned with Rwanda's official administrative divisions.
+
+| Table | Description |
+|---|---|
+| `provinces` | 5 provinces of Rwanda (including Kigali City) |
+| `districts` | 30 districts |
+| `sectors` | Sectors within each district |
+
+---
+
+### 2. Sports & Disciplines
+
+| Table | Description |
+|---|---|
+| `sport_categories` | Groupings: Team Sports, Individual, Combat, Aquatic, Racket, Athletics |
+| `sports` | 17+ sports with governing body (FIFA, FIBA, World Athletics, etc.) |
+| `age_categories` | Per-sport age brackets: U13, U15, U17, U20, Senior, Masters — with gender |
+
+**Age Category Example (Football):**
+
+| Category | Min Age | Max Age | Gender |
+|---|---|---|---|
+| U13 | — | 13 | M/F |
+| U17 | — | 17 | M/F |
+| U20 | — | 20 | M/F |
+| Senior | 18 | — | M/F |
+
+---
+
+### 3. Federation Hierarchy
+
+| Table | Description |
+|---|---|
+| `federations` | Supports NATIONAL, PROVINCIAL, and DISTRICT level federations |
+
+Federations reference a `parent_fed_id` for hierarchical nesting. Each federation is linked to a specific sport.
+
+---
+
+### 4. Clubs & Teams
+
+| Table | Description |
+|---|---|
+| `clubs` | Registered clubs with affiliation status (ACTIVE, SUSPENDED, REVOKED, PENDING) |
+| `teams` | Season-specific teams per club and age category |
+| `player_registrations` | Player's registration to a club per season |
+| `player_transfers` | Full transfer history: PERMANENT, LOAN, FREE, RETURN_FROM_LOAN |
+
+---
+
+### 5. NIDA Integration
+
+This is the **core anti-fraud engine** of the system.
+
+| Table | Description |
+|---|---|
+| `nida_records` | Mirror of NIDA data pulled via API (read-only cache) |
+| `nida_verification_log` | Audit trail of every DOB verification request |
+
+**NIDA Record fields:**
+
+```sql
+national_id     CHAR(16)   -- Rwanda 16-digit NID
+first_name      VARCHAR
+last_name       VARCHAR
+date_of_birth   DATE       -- The ground truth for age verification
+gender          CHAR(1)
+is_valid        BOOLEAN
+last_verified   TIMESTAMP
+raw_response    JSONB      -- Full API response stored for reference
+```
+
+**Verification Log fields:**
+
+```sql
+verification_type   -- REGISTRATION | COMPETITION_ELIGIBILITY | PERIODIC_AUDIT
+dob_submitted       -- What the club/federation submitted
+dob_from_nida       -- What NIDA returned
+dob_match           -- TRUE/FALSE
+mismatch_days       -- Absolute day difference
+response_status     -- SUCCESS | MISMATCH | NOT_FOUND | TIMEOUT
+```
+
+---
+
+### 6. Persons Registry
+
+Central table for ALL individuals in the system (players, coaches, referees, staff).
+
+**NIDA Verification Status per person:**
+
+| Status | Meaning |
+|---|---|
+| `PENDING` | Not yet verified against NIDA |
+| `VERIFIED` | DOB matches NIDA exactly |
+| `MISMATCH` | Small discrepancy (1–90 days) — under review |
+| `FLAGGED` | Large discrepancy (>90 days) — likely fraud |
+| `NOT_FOUND` | NID not found in NIDA database |
+| `EXEMPT` | Manually exempted (e.g. foreign players) |
+
+> ⚠️ A person's `eligible_to_play` flag remains `FALSE` until their status reaches `VERIFIED`.
+
+---
+
+### 7. Players
+
+| Table | Description |
+|---|---|
+| `players` | Player profile: position, height/weight, registration status |
+| `player_registrations` | Club + team + season + jersey number |
+| `player_transfers` | Transfer history with fees, dates, and approval workflow |
+
+**Player Registration Status:**
+
+```
+ACTIVE → PENDING_VERIFICATION → SUSPENDED → BANNED → RETIRED
+```
+
+---
+
+### 8. Coaches & Officials
+
+| Table | Description |
+|---|---|
+| `coach_license_types` | License levels: CAF C, CAF B, CAF A, PRO |
+| `coaches` | Licensed coaches with expiry tracking |
+| `club_coaches` | Coach assignment to club/team with role |
+| `referees` | Referee grades: International, National, Regional, Local |
+
+All coaches and referees are also registered as `persons` and subject to NIDA verification.
+
+---
+
+### 9. Competitions & Matches
+
+| Table | Description |
+|---|---|
+| `competition_types` | League, Cup, Friendly, Championship |
+| `competitions` | Tournament with level: NATIONAL, PROVINCIAL, DISTRICT, INTERNATIONAL |
+| `competition_participants` | Club entries per competition |
+| `venues` | Stadiums and grounds with GPS coordinates and surface type |
+| `matches` | Fixtures and results with referee assignment |
+
+**Match Status Flow:**
+```
+SCHEDULED → ONGOING → COMPLETED
+         ↓
+    POSTPONED / CANCELLED / ABANDONED / FORFEITED
+```
+
+---
+
+### 10. Player Statistics
+
+| Table | Description |
+|---|---|
+| `player_match_stats` | Per-match: minutes played, goals, assists, cards |
+| `player_season_stats` | Aggregated season totals per player per club |
+
+Both tables include a `extra_stats JSONB` column to store sport-specific metrics (e.g. rebounds for basketball, try assists for rugby) without schema changes.
+
+---
+
+### 11. Disciplinary Management
+
+| Table | Description |
+|---|---|
+| `disciplinary_cases` | Cases of type: YELLOW_CARD, RED_CARD, SUSPENSION, BAN, FINE, AGE_FRAUD, DOPING, MISCONDUCT |
+
+**Case Status Flow:**
+```
+OPEN → UNDER_REVIEW → DECIDED → CLOSED
+                   ↓
+               APPEALED
+```
+
+---
+
+### 12. Age Fraud Investigations
+
+Dedicated table for tracking age falsification cases.
+
+```sql
+person_id             -- Who is being investigated
+dob_on_file           -- What was registered
+dob_from_nida         -- What NIDA says
+dob_difference_days   -- Computed absolute difference
+evidence_type         -- NIDA_MISMATCH | PHYSICAL_ASSESSMENT | TIPOFF
+investigation_status  -- OPEN | UNDER_INVESTIGATION | CONFIRMED_FRAUD | CLEARED
+action_taken          -- BANNED | SUSPENDED | CLEARED
+```
+
+> Cases with a DOB difference greater than **90 days** are **automatically created** by the system when NIDA verification runs.
+
+---
+
+### 13. System Users & Access Control
+
+| Table | Description |
+|---|---|
+| `roles` | 9 roles from SUPER_ADMIN to VIEWER |
+| `system_users` | Login accounts linked to persons, scoped to federation or club |
+| `audit_log` | Every INSERT/UPDATE/DELETE logged with old and new values |
+
+**Roles:**
+
+| Role | Scope |
+|---|---|
+| `SUPER_ADMIN` | Full system access |
+| `FED_ADMIN` | National federation administrator |
+| `PROV_ADMIN` | Provincial federation administrator |
+| `CLUB_ADMIN` | Club-level administrator |
+| `REGISTRAR` | Player registration officer |
+| `NIDA_OFFICER` | NIDA verification officer |
+| `REFEREE_ADMIN` | Referee and officials manager |
+| `COMPETITION_MGR` | Competition and fixtures manager |
+| `VIEWER` | Read-only access |
+
+---
+
+## NIDA Anti-Fraud Logic
+
+The DOB fraud detection flow works as follows:
+
+```
+1. Club submits player for registration
+         │
+         ▼
+2. System sends NID to NIDA API
+         │
+         ▼
+3. NIDA returns official date_of_birth
+         │
+         ▼
+4. fn_check_dob_mismatch() compares DOBs
+         │
+    ┌────┴────┐
+    │         │
+  Match    Mismatch
+    │         │
+    ▼         ▼
+VERIFIED   1–90 days → MISMATCH (manual review)
+eligible   >90 days  → FLAGGED + auto-investigation
+to_play              + player blocked immediately
+```
+
+**Key rule:** A player's `eligible_to_play` field is only set to `TRUE` after a clean NIDA verification (zero-day difference).
+
+---
+
+## Stored Functions & Triggers
+
+### `fn_check_dob_mismatch(person_id, nida_dob)`
+Called after every NIDA API response. Compares DOBs, updates person status, blocks player eligibility, and auto-creates fraud investigations for large mismatches.
+
+### `fn_is_player_eligible(player_id, age_cat_id, check_date)`
+Returns `(is_eligible BOOLEAN, reason TEXT)`. Checks NIDA verification status, suspension/ban status, and age category bounds. Used before every competition registration.
+
+### `fn_update_timestamp()`
+Trigger function on `persons`, `players`, `clubs`, `matches` — automatically sets `updated_at` on every UPDATE.
+
+---
+
+## Useful Views
+
+| View | Purpose |
+|---|---|
+| `v_dob_mismatch_players` | All players with a DOB discrepancy, sorted by severity |
+| `v_player_club_eligibility` | Player + club + current age + eligibility status |
+| `v_competition_eligibility` | Cross-check players against age category bounds |
+| `v_nida_verification_summary` | Dashboard totals: verified / pending / flagged / not found |
+
+---
+
+## Sports Covered
+
+| Sport | Code | Governing Body | Olympic |
+|---|---|---|---|
+| Football | FOOTB | FIFA | ✅ |
+| Basketball | BSKTB | FIBA | ✅ |
+| Volleyball | VOLLB | FIVB | ✅ |
+| Handball | HNDBL | IHF | ✅ |
+| Rugby | RUGBY | World Rugby | ✅ |
+| Cycling | CYCLE | UCI | ✅ |
+| Triathlon | TRIAT | World Triathlon | ✅ |
+| Weightlifting | WLIFT | IWF | ✅ |
+| Boxing | BOXNG | AIBA | ✅ |
+| Judo | JUDOO | IJF | ✅ |
+| Taekwondo | TAEKW | WT | ✅ |
+| Wrestling | WRSTL | UWW | ✅ |
+| Swimming | SWIMM | FINA | ✅ |
+| Tennis | TENNS | ITF | ✅ |
+| Badminton | BADMN | BWF | ✅ |
+| Table Tennis | TTNNS | ITTF | ✅ |
+| Athletics | ATHLT | World Athletics | ✅ |
+
+---
+
+## Entity Relationship Summary
+
+```
+provinces
+  └── districts
+        └── sectors
+
+sport_categories
+  └── sports
+        └── age_categories
+
+federations (self-referencing hierarchy)
+  └── clubs
+        └── teams
+              └── player_registrations ──► players ──► persons ──► nida_records
+                                                   └── player_match_stats
+                                                   └── player_season_stats
+                                                   └── player_transfers
+
+competitions
+  └── competition_participants
+  └── matches
+        └── player_match_stats
+        └── referees
+
+persons
+  ├── players
+  ├── coaches ──► club_coaches
+  └── referees
+
+disciplinary_cases ──► age_fraud_investigations
+audit_log ──► system_users ──► roles
+```
+
+---
+
+## Setup & Installation
+
+### Requirements
+
+- PostgreSQL 14 or higher
+- Access to Rwanda NIDA API (for live verification)
+
+### Run the Schema
+
+```bash
+# Create the database
+createdb rwanda_sports_federation
+
+# Apply the full schema
+psql -U postgres -d rwanda_sports_federation -f sports_federation_schema.sql
+
+# Verify tables were created
+psql -U postgres -d rwanda_sports_federation -c "\dt"
+```
+
+### Configure NIDA API Connection
+
+Store your NIDA API credentials securely (e.g. environment variables or a secrets manager):
+
+```env
+NIDA_API_URL=https://nida.gov.rw/api/v1/verify
+NIDA_API_KEY=your_api_key_here
+NIDA_TIMEOUT_SECONDS=10
+```
+
+After each NIDA API response, call:
+
+```sql
+SELECT fn_check_dob_mismatch(:person_id, :nida_dob_returned);
+```
+
+### Check Fraud Dashboard
+
+```sql
+-- See all flagged players
+SELECT * FROM v_dob_mismatch_players;
+
+-- Overall verification health
+SELECT * FROM v_nida_verification_summary;
+
+-- Open fraud investigations
+SELECT * FROM age_fraud_investigations
+WHERE investigation_status = 'OPEN'
+ORDER BY dob_difference_days DESC;
+```
+
+---
+
+## Next Steps
+
+| Phase | Deliverable | Description |
+|---|---|---|
+| **Phase 2** | Web Dashboard (UI) | Admin portal to manage players, clubs, and see NIDA flags in real time |
+| **Phase 3** | NIDA API Integration | Backend service to call NIDA, handle timeouts, and store results |
+| **Phase 4** | ERD Diagram | Visual entity-relationship diagram of all 30+ tables |
+| **Phase 5** | Mobile App | Player ID card app for coaches and referees to scan NID on match day |
+| **Phase 6** | Reporting Module | PDF/Excel exports for federation reports and audit submissions |
+
+---
+
+> **Database file:** `sports_federation_schema.sql` — 830 lines, PostgreSQL 14+
+> **Maintained by:** Rwanda National Sports Federation IT Department

@@ -1,6 +1,6 @@
 # sport_federation_of_rwanda
 
-## 1. Real Problem You Are Solving
+## 1. Real Problem Solving 
 
 Many youth competitions (U13, U17, U20) face age cheating, where players falsify their birth dates to compete in younger categories.
 
@@ -14,7 +14,7 @@ By integrating the database with National Identification Agency, your system ens
 
 This could help organizations like Rwanda Football Federation or other sports federations.
 
-## 2. Key Benefits of Your System
+## 2. Key Benefits of System
 ### 1️⃣ Prevent Age Fraud
 
 Your module:
